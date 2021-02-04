@@ -1,9 +1,6 @@
 import * as THREE from "../node_modules/three/build/three.module.js"
 import { OrbitControls } from "https://threejs.org/examples/jsm/controls/OrbitControls.js"
-import { OBJLoader } from "../node_modules/three/examples/jsm/loaders/OBJLoader.js"
-import { MTLLoader } from "../node_modules/three/examples/jsm/loaders/MTLLoader.js"
 import { GLTFLoader } from "../node_modules/three/examples/jsm/loaders/GLTFLoader.js"
-import { DRACOLoader } from "../node_modules/three/examples/jsm/loaders/DRACOLoader.js"
 
 // Dom Elements
 const btnPlay = document.querySelector(".play")
@@ -18,18 +15,10 @@ const btnCustom3 = document.querySelector(".custom3")
  */
 
 // Animation
-let mixer, previousAnimation, activeAction
+let mixer, cameraAnimation
 const sceneList = [0, 3, 7.1, 12.5, 16.3, 20.3, 24.9, 30]
 let currentScene = 0
 let isCameraMovementLock = false
-
-// GUI
-const GUILightParams = {
-	intensity: 2,
-	x: 0,
-	y: 25,
-	z: 25,
-}
 
 const GUICameraParams = {
 	time: 0,
@@ -40,54 +29,62 @@ const GUICameraParams = {
  */
 
 const gui = new dat.GUI()
-
 const GUILightFolder = gui.addFolder("Light")
-GUILightFolder.add(GUILightParams, "intensity", 0, 3, 0.2).onChange(number => {
-	hemiLight.intensity = number
-})
-
-GUILightFolder.add(GUILightParams, "x", 0, 30, 0.2).onChange(number => {
-	hemiLight.position.x = number
-})
-
-GUILightFolder.add(GUILightParams, "y", 0, 30, 0.2).onChange(number => {
-	hemiLight.position.y = number
-})
-
-GUILightFolder.add(GUILightParams, "z", 0, 30, 0.2).onChange(number => {
-	hemiLight.position.z = number
-})
+const GUICameraFolder = gui.addFolder("Camera")
+const GUIRendererFolder = gui.addFolder("renderer")
+const GUIAmbiantSubfolder = GUILightFolder.addFolder("Ambient")
+const GUIHemiSubfolder = GUILightFolder.addFolder("Hemi")
+const GUIDirlightSubfolder = GUILightFolder.addFolder("Dirlight")
+GUICameraFolder.open()
 GUILightFolder.open()
 
-const GUICameraFolder = gui.addFolder("Camera")
 GUICameraFolder.add(GUICameraParams, "time", 0, 30, 0.1).onChange(number => {
-	mixer.clipAction(activeAction).time = number
+	mixer.clipAction(cameraAnimation).time = number
 })
-GUICameraFolder.open()
 
-// Create a scene, camera and renderer
+// Create a scene, camera
 const scene = new THREE.Scene()
 let camera = new THREE.PerspectiveCamera(
 	60,
 	window.innerWidth / window.innerHeight,
 	0.1,
-	1000
+	3000
 )
+scene.background = new THREE.Color(0xa4c8ff)
 
-scene.background = new THREE.Color(0x000000)
+/**
+ * Renderer
+ */
 const renderer = new THREE.WebGLRenderer({ antialias: true })
 renderer.setSize(window.innerWidth, window.innerHeight)
+renderer.shadowMap.enabled = true
+renderer.shadowMap.type = THREE.PCFSoftShadowMap
+renderer.outputEncoding = THREE.sRGBEncoding
+renderer.physicallyCorrectLights = true
+renderer.toneMappingExposure = 5
+renderer.toneMapping = THREE.ReinhardToneMapping
+
+GUIRendererFolder.add(renderer, "toneMapping", {
+	No: THREE.NoToneMapping,
+	Linear: THREE.LinearToneMapping,
+	Reinhard: THREE.ReinhardToneMapping,
+	Cineon: THREE.CineonToneMapping,
+	ACESFilmic: THREE.ACESFilmicToneMapping,
+}).onFinishChange(() => {
+	renderer.toneMapping = Number(renderer.toneMapping)
+	updateAllMaterials()
+})
+
+GUIRendererFolder.add(renderer, "toneMappingExposure")
+	.min(0)
+	.max(10)
+	.step(0.001)
 
 document.body.appendChild(renderer.domElement)
 
 // Load .glb
 // Instantiate a loader
 const loader = new GLTFLoader()
-
-// Optional: Provide a DRACOLoader instance to decode compressed mesh data
-const dracoLoader = new DRACOLoader()
-dracoLoader.setDecoderPath("/examples/js/libs/draco/")
-loader.setDRACOLoader(dracoLoader)
 
 // Load a glTF resource
 loader.load(
@@ -97,28 +94,33 @@ loader.load(
 	function (gltf) {
 		// Load the scene and animations
 		scene.add(gltf.scene)
-		gltf.scene.scale.set(40, 40, 40)
 		mixer = new THREE.AnimationMixer(gltf.scene)
-		activeAction = gltf.animations[0]
-		console.log(mixer.clipAction(activeAction))
-		mixer.clipAction(activeAction).play()
+		cameraAnimation = gltf.animations[0]
+		console.log(mixer.clipAction(cameraAnimation))
+		mixer.clipAction(cameraAnimation).play()
 
 		// Pause right after playing - Fix
-		requestAnimationFrame(() => (mixer.clipAction(activeAction).paused = true))
+		requestAnimationFrame(
+			() => (mixer.clipAction(cameraAnimation).paused = true)
+		)
 
 		// Assign the loaded camera
 		camera = gltf.cameras[0]
+
+		// Cast Shadows
+		updateAllMaterials()
 
 		// Controlls
 		btnPlay.addEventListener("click", e => {})
 
 		btnStop.addEventListener("click", e => {
-			mixer.clipAction(activeAction).paused = !mixer.clipAction(activeAction)
-				.paused
+			mixer.clipAction(cameraAnimation).paused = !mixer.clipAction(
+				cameraAnimation
+			).paused
 		})
 
 		btnHalt.addEventListener("click", e => {
-			mixer.clipAction(activeAction).halt(1)
+			mixer.clipAction(cameraAnimation).halt(1)
 		})
 
 		// Listen to scroll Event
@@ -132,9 +134,17 @@ loader.load(
 			}
 		})
 
+		btnCustom.addEventListener("click", e => {
+			changeScene(currentScene - 1, 3)
+		})
+
+		btnCustom2.addEventListener("click", e => {
+			changeScene(currentScene + 1, 3)
+		})
+
 		btnCustom3.addEventListener("click", e => {
 			// Specific scene
-			gsap.to(mixer.clipAction(activeAction), {
+			gsap.to(mixer.clipAction(cameraAnimation), {
 				time: 13,
 				duration: 3,
 			})
@@ -150,17 +160,55 @@ loader.load(
 	}
 )
 
-// Create lights
-const hemiLight = new THREE.HemisphereLight(
-	0xffeeb1,
-	0x080820,
-	GUILightParams.intensity
-)
-hemiLight.position.set(0, 25, 25)
-const hemiLightHelper = new THREE.HemisphereLightHelper(hemiLight, 5)
-console.log(hemiLight.position.z)
+/**
+ * Lights
+ */
 
-scene.add(hemiLight, hemiLightHelper)
+// Ambient
+const AmbientLight = new THREE.AmbientLight(0xa4c8ff, 0.17)
+scene.add(AmbientLight)
+GUIAmbiantSubfolder.add(AmbientLight, "intensity", 0, 1, 0.01)
+
+// Hemispherical
+const hemiLight = new THREE.HemisphereLight(0xa4c8ff, 0xa4c8ff, 0.6)
+
+hemiLight.position.set(0, 50, 0)
+scene.add(hemiLight)
+
+const hemiLightHelper = new THREE.HemisphereLightHelper(hemiLight, 10)
+//scene.add(hemiLightHelper)
+GUIHemiSubfolder.add(hemiLight, "intensity", 0, 3, 0.01)
+
+// Direct
+const dirLight = new THREE.DirectionalLight(0xffffff, 1)
+dirLight.color.setHSL(0.1, 1, 0.95)
+dirLight.position.set(-54, 52, 30)
+dirLight.position.multiplyScalar(30)
+scene.add(dirLight)
+
+dirLight.castShadow = true
+
+dirLight.shadow.mapSize.width = 2048
+dirLight.shadow.mapSize.height = 2048
+
+const d = 50
+
+dirLight.shadow.camera.left = -d
+dirLight.shadow.camera.right = d
+dirLight.shadow.camera.top = d
+dirLight.shadow.camera.bottom = -d
+
+dirLight.shadow.camera.far = 3500
+dirLight.shadow.bias = -0.0005
+
+const dirLightHelper = new THREE.DirectionalLightHelper(dirLight, 10)
+//scene.add(dirLightHelper)
+
+// GUI
+GUIDirlightSubfolder.add(dirLight, "intensity", 0, 3, 0.01)
+GUIDirlightSubfolder.add(dirLight.position, "x", -2000, 150, 0.2)
+GUIDirlightSubfolder.add(dirLight.position, "y", -200, 2000, 0.2)
+GUIDirlightSubfolder.add(dirLight.position, "z", -2000, 2000, 0.2)
 
 /**
  * Camera movement w/ cursor
@@ -196,10 +244,6 @@ function animate() {
 }
 animate()
 
-// ??
-const raycaster = new THREE.Raycaster()
-const mouse = new THREE.Vector2()
-
 const helper = new THREE.CameraHelper(camera)
 scene.add(helper)
 
@@ -214,7 +258,7 @@ function changeScene(newSceneNumber, duration) {
 		return console.log("changeScene Guard")
 
 	isCameraMovementLock = true
-	gsap.to(mixer.clipAction(activeAction), {
+	gsap.to(mixer.clipAction(cameraAnimation), {
 		time: sceneList[newSceneNumber],
 		duration: duration,
 		onComplete: () => (isCameraMovementLock = false),
@@ -232,9 +276,35 @@ function onWindowResize() {
 
 	render()
 }
+onWindowResize()
 
 function render() {
 	renderer.render(scene, camera)
 }
 
+/**
+ * Update all materials
+ */
+function updateAllMaterials() {
+	scene.traverse(child => {
+		// Only Meshes
+		if (
+			child instanceof THREE.Mesh &&
+			child.material instanceof THREE.MeshStandardMaterial
+		) {
+			child.material.needsUpdate = true
+			child.castShadow = true
+			child.receiveShadow = true
+		}
+	})
+}
+
 // Temp
+//const controls = new OrbitControls(camera, renderer.domElement)
+camera.position.set(-23, 50, 72)
+
+setInterval(() => {
+	//console.log(camera.position)
+	console.log("tonemapping", renderer.toneMapping)
+	onWindowResize()
+}, 500)
